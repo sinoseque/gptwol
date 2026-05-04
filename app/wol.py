@@ -579,55 +579,52 @@ def arp_scan():
   except Exception as e:
     return jsonify({'message': str(e)}), 500
 
+# Nuevo timeout por defecto para la API (en segundos)
+api_default_timeout = int(os.environ.get('API_CHECK_TIMEOUT', 30))
+
 @app.route('/api/wake/<mac_address>', methods=['POST', 'GET'])
-# @login_required  # Opcional: puedes quitarlo para llamadas desde scripts externos
 def api_wake_device(mac_address):
-    # 1. Obtener parámetros: timeout (segundos)
-    # Ejemplo de uso: /api/wake/00:11:22:33:44:55?timeout=30
-    timeout = request.args.get('timeout', default=20, type=int)
+    # Permite sobrescribir el timeout de la env vía URL: /api/wake/MAC?timeout=60
+    timeout = request.args.get('timeout', default=api_default_timeout, type=int)
     
-    # 2. Buscar el dispositivo en la DB
+    # 1. Buscar el dispositivo en la base de datos
     computer = Computer.query.filter_by(mac_address=mac_address).first()
     if not computer:
-        return jsonify({"status": "KO", "error": "Device not found"}), 404
+        return jsonify({"status": "KO", "error": f"Device {mac_address} not found in DB"}), 404
 
-    # 3. Enviar el paquete WoL
-    # Usamos la lógica original del proyecto
+    # 2. Enviar el paquete WoL (Lógica original de gptwol)
     if l2_wol_packet:
         send_l2_wol_packet(mac_address, l2_interface)
     else:
         send_wol_packet(mac_address)
     
-    logger.info(f"API: WoL enviado a {computer.name} ({mac_address}). Esperando respuesta...")
+    logger.info(f"API: WoL enviado a {computer.name}. Verificando estado (timeout: {timeout}s)...")
 
-    # 4. Bucle de verificación (Polling)
+    # 3. Bucle de verificación reintentable
     start_time = time.time()
     awake = False
     
     while (time.time() - start_time) < timeout:
-        # Usamos la función original para chequear ICMP/ARP/TCP
         if is_computer_awake(computer.ip_address, computer.test_type):
             awake = True
             break
-        time.sleep(2) # Espera 2 segundos entre intentos para no saturar
+        time.sleep(2) # Pausa de 2 segundos entre intentos para no saturar la red
     
-    # 5. Respuesta final
+    # 4. Respuesta según resultado
     if awake:
-        logger.info(f"API: {computer.name} respondió correctamente.")
         return jsonify({
             "status": "OK",
             "device": computer.name,
             "mac": mac_address,
-            "waited_seconds": round(time.time() - start_time, 2)
+            "message": "Device is up and running"
         }), 200
     else:
-        logger.warning(f"API: {computer.name} NO respondió tras {timeout}s.")
         return jsonify({
             "status": "KO",
             "device": computer.name,
             "mac": mac_address,
-            "error": "Timeout reached, device still down"
-        }), 504 # Gateway Timeout es apropiado aquí
+            "error": "Timeout: Device did not respond"
+        }), 504
 
 with app.app_context():
   db.create_all()
