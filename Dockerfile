@@ -35,8 +35,13 @@ RUN pip install --no-cache-dir --prefix=/install -r /app/requirements.txt \
 FROM python:3.14-slim
 
 # install only runtime packages (no build tools)
+# He mantenido fping, cron, arp-scan y netcat-traditional (necesario para el check TCP)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      fping cron netcat-traditional arp-scan \
+      fping \
+      cron \
+      netcat-traditional \
+      arp-scan \
+      iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # copy the installed python packages + app assets from builder
@@ -44,8 +49,10 @@ COPY --from=builder /install /usr/local
 COPY --from=builder /app /app
 
 # Default ENV
+# He añadido API_CHECK_TIMEOUT aquí como valor por defecto
 ENV PORT=5000 \
-    IP=0.0.0.0
+    IP=0.0.0.0 \
+    API_CHECK_TIMEOUT=30
 
 WORKDIR /app
 

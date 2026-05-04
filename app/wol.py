@@ -10,6 +10,7 @@ import os
 import ipaddress
 import re
 import fcntl
+import time
 
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
@@ -577,6 +578,53 @@ def arp_scan():
 
   except Exception as e:
     return jsonify({'message': str(e)}), 500
+
+# Nuevo timeout por defecto para la API (en segundos)
+api_default_timeout = int(os.environ.get('API_CHECK_TIMEOUT', 30))
+
+@app.route('/api/wake/<mac_address>', methods=['POST', 'GET'])
+def api_wake_device(mac_address):
+    # Permite sobrescribir el timeout de la env vía URL: /api/wake/MAC?timeout=60
+    timeout = request.args.get('timeout', default=api_default_timeout, type=int)
+    
+    # 1. Buscar el dispositivo en la base de datos
+    computer = Computer.query.filter_by(mac_address=mac_address).first()
+    if not computer:
+        return jsonify({"status": "KO", "error": f"Device {mac_address} not found in DB"}), 404
+
+    # 2. Enviar el paquete WoL (Lógica original de gptwol)
+    if l2_wol_packet:
+        send_l2_wol_packet(mac_address, l2_interface)
+    else:
+        send_wol_packet(mac_address)
+    
+    logger.info(f"API: WoL enviado a {computer.name}. Verificando estado (timeout: {timeout}s)...")
+
+    # 3. Bucle de verificación reintentable
+    start_time = time.time()
+    awake = False
+    
+    while (time.time() - start_time) < timeout:
+        if is_computer_awake(computer.ip_address, computer.test_type):
+            awake = True
+            break
+        time.sleep(2) # Pausa de 2 segundos entre intentos para no saturar la red
+    
+    # 4. Respuesta según resultado
+    if awake:
+        return jsonify({
+            "status": "OK",
+            "device": computer.name,
+            "mac": mac_address,
+            "message": "Device is up and running"
+        }), 200
+    else:
+        return jsonify({
+            "status": "KO",
+            "device": computer.name,
+            "mac": mac_address,
+            "error": "Timeout: Device did not respond"
+        }), 504
 
 with app.app_context():
   db.create_all()
