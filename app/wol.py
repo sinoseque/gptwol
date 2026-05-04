@@ -2,6 +2,7 @@ from flask import Flask, request, render_template, redirect, url_for, jsonify, s
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
 from flask_sqlalchemy import SQLAlchemy
 from authlib.integrations.flask_client import OAuth
+from sqlalchemy import func
 import logging
 import socket
 import struct
@@ -584,19 +585,28 @@ api_default_timeout = int(os.environ.get('API_CHECK_TIMEOUT', 30))
 
 @app.route('/api/wake/<identifier>', methods=['POST', 'GET'])
 def api_wake_device(identifier):
-    # Permite sobrescribir el timeout de la env vía URL
     timeout = request.args.get('timeout', default=api_default_timeout, type=int)
     
-    # 1. Buscar el dispositivo por MAC o por Nombre
-    # Buscamos en la columna mac_address O en la columna name
+    # Decodificar el parámetro de la URL por si tiene espacios (%20)
+    import urllib.parse
+    clean_id = urllib.parse.unquote(identifier).strip()
+
+    # Buscamos ignorando mayúsculas/minúsculas
     computer = Computer.query.filter(
-        (Computer.mac_address == identifier) | (Computer.name == identifier)
+        (func.lower(Computer.mac_address) == clean_id.lower()) | 
+        (func.lower(Computer.name) == clean_id.lower())
     ).first()
 
     if not computer:
+        # LOGS de depuración: Esto saldrá en 'docker logs'
+        # Te dirá exactamente qué está recibiendo y qué hay en la DB
+        all_names = [c.name for c in Computer.query.all()]
+        logger.error(f"API Error: No encontrado '{clean_id}'. Nombres en DB: {all_names}")
+        
         return jsonify({
             "status": "KO", 
-            "error": f"Device with identifier '{identifier}' not found in DB"
+            "error": f"Device '{clean_id}' not found",
+            "available_names": all_names # Esto te ayudará a ver si hay espacios raros
         }), 404
 
     # Usamos la MAC real encontrada en la base de datos para enviar el paquete
