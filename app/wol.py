@@ -582,25 +582,35 @@ def arp_scan():
 # Nuevo timeout por defecto para la API (en segundos)
 api_default_timeout = int(os.environ.get('API_CHECK_TIMEOUT', 30))
 
-@app.route('/api/wake/<mac_address>', methods=['POST', 'GET'])
-def api_wake_device(mac_address):
-    # Permite sobrescribir el timeout de la env vía URL: /api/wake/MAC?timeout=60
+@app.route('/api/wake/<identifier>', methods=['POST', 'GET'])
+def api_wake_device(identifier):
+    # Permite sobrescribir el timeout de la env vía URL
     timeout = request.args.get('timeout', default=api_default_timeout, type=int)
     
-    # 1. Buscar el dispositivo en la base de datos
-    computer = Computer.query.filter_by(mac_address=mac_address).first()
+    # 1. Buscar el dispositivo por MAC o por Nombre
+    # Buscamos en la columna mac_address O en la columna name
+    computer = Computer.query.filter(
+        (Computer.mac_address == identifier) | (Computer.name == identifier)
+    ).first()
+
     if not computer:
-        return jsonify({"status": "KO", "error": f"Device {mac_address} not found in DB"}), 404
+        return jsonify({
+            "status": "KO", 
+            "error": f"Device with identifier '{identifier}' not found in DB"
+        }), 404
 
-    # 2. Enviar el paquete WoL (Lógica original de gptwol)
+    # Usamos la MAC real encontrada en la base de datos para enviar el paquete
+    target_mac = computer.mac_address
+
+    # 2. Enviar el paquete WoL
     if l2_wol_packet:
-        send_l2_wol_packet(mac_address, l2_interface)
+        send_l2_wol_packet(target_mac, l2_interface)
     else:
-        send_wol_packet(mac_address)
+        send_wol_packet(target_mac)
     
-    logger.info(f"API: WoL enviado a {computer.name}. Verificando estado (timeout: {timeout}s)...")
+    logger.info(f"API: WoL enviado a {computer.name} ({target_mac}). Verificando estado...")
 
-    # 3. Bucle de verificación reintentable
+    # 3. Bucle de verificación
     start_time = time.time()
     awake = False
     
@@ -608,22 +618,21 @@ def api_wake_device(mac_address):
         if is_computer_awake(computer.ip_address, computer.test_type):
             awake = True
             break
-        time.sleep(2) # Pausa de 2 segundos entre intentos para no saturar la red
+        time.sleep(2)
     
-    # 4. Respuesta según resultado
     if awake:
         return jsonify({
             "status": "OK",
             "device": computer.name,
-            "mac": mac_address,
-            "message": "Device is up and running"
+            "mac": target_mac,
+            "message": "Device is up"
         }), 200
     else:
         return jsonify({
             "status": "KO",
             "device": computer.name,
-            "mac": mac_address,
-            "error": "Timeout: Device did not respond"
+            "mac": target_mac,
+            "error": "Timeout reached"
         }), 504
 
 with app.app_context():
